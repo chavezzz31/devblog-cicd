@@ -16,7 +16,8 @@ LABEL version="1.0"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV FLASK_ENV=production
-ENV PORT=5000  # Usado por Railway
+ENV PORT=5000  
+# Usado por Railway
 
 # ================================
 # ETAPA 4: INSTALACIÓN DE DEPENDENCIAS
@@ -54,7 +55,7 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 # ================================
 # ETAPA 8: CONFIGURACIÓN DE RED
 # ================================
-EXPOSE $PORT  # Usa la variable de entorno
+EXPOSE $PORT
 
 # ================================
 # ETAPA 9: COMANDO DE INICIO
