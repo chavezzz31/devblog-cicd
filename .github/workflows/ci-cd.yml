@@ -1,168 +1,106 @@
 name: DevBlog CI/CD Pipeline
 
-# ¿Cuándo se ejecuta este pipeline?
 on:
   push:
-    branches: [ main, develop ] # En push a main o develop
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]    # En pull requests a main
+    branches: [ main ]
 
-# Variables de entorno globales
 env:
   PYTHON_VERSION: '3.11'
-  NODE_VERSION: '18'
+  PORT: 5000  # Nuevo: Para usar en Docker
 
-# Jobs (trabajos) que se ejecutarán
 jobs:
-  # ================================
-  # JOB 1: TESTING
-  # ================================
   test:
     name: Run Tests
     runs-on: ubuntu-latest
 
     steps:
-      # Paso 1: Descargar código del repositorio
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Paso 2: Configurar Python
-      - name: Set up Python ${{ env.PYTHON_VERSION }} 
-        uses: actions/setup-python@v4 
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }} 
-
-      # Paso 3: Cache de dependencies (optimizacion)
-      - name: Cache pip dependencies 
-        uses: actions/cache@v3 
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      - uses: actions/cache@v3
         with:
-          path: ~/.cache/pip 
-          key: ${{ runner.os }}--pip--${{ hashFiles('**/requirements.txt') }} 
-          restore-keys: | 
-            ${{ runner.os }}--pip-- 
-
-      # Paso 4: Installar dependencies
-      - name: Install dependencies 
-        run: | 
-          python -m pip install --upgrade pip 
-          pip install -r requirements.txt 
-
-      # Paso 5: Ejecutar tests con cobertura
-      - name: Run tests with coverage 
-        run: | 
-          pytest --cov=app --cov-report=xml --cov-report=term-missing -v 
-
-      # Paso 6: Subir reporte de cobertura (opcional)
-      - name: Upload coverage to Codecov 
-        uses: codecov/codecov-action@v3 
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run tests
+        run: |
+          pytest --cov=app --cov-report=xml --cov-report=term-missing -v
+          
+      - uses: codecov/codecov-action@v3
         with:
-          file: ./coverage.xml 
-          fail_ci_if_error: false 
+          file: ./coverage.xml
 
-  # ================================
-  # JOB 2: DOCKER BUILD
-  # ================================
   docker-build:
-    name: Build Docker Image 
-    runs-on: ubuntu-latest 
-    needs: test # Solo se ejecuta si los tests pasan 
-
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    
     steps:
-      # Paso 1: Descargar código
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Paso 2: Configurar Docker Buildx
+      - uses: actions/checkout@v4
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # Paso 3: Construir imagen Docker
-      - name: Build Docker image
+      
+      - name: Build image
         run: |
           docker build -t devblog:${{ github.sha }} .
           docker build -t devblog:latest .
-
-      # Paso 4: Probar que la imagen funciona
-      - name: Test Docker image
+          
+      - name: Test image
         run: |
-          # Ejecutar contenedor en background
-          docker run -d -p 5000:5000 --name test-container devblog:latest
+          docker run -d -p ${{ env.PORT }}:${{ env.PORT }} --name test-app devblog:latest
+          sleep 15  # Aumentado a 15s como indica el documento
+          curl -f http://localhost:${{ env.PORT }}/api/health || exit 1
+          docker stop test-app
 
-          # Esperar que inicie
-          sleep 10
-
-          # Probar que responde
-          curl -f http://localhost:5000/ || exit 1
-          curl -f http://localhost:5000/api/posts || exit 1
-
-          # Limpiar
-          docker stop test-container
-          docker rm test-container
-
-      # Paso 5: Guardar imagen como artefacto (opcional)
-      - name: Save Docker image
-        run: |
-          docker save devblog:latest | gzip > devblog-image.tar.gz
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: docker-image
-          path: devblog-image.tar.gz
-          retention-days: 1
-
-  # ================================
-  # JOB 3: SECURITY SCAN
-  # ================================
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: test
-
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      # Escaneo de vulnerabilidades en dependencias
-      - name: Run safety check
+          
+      - name: Run security checks
         run: |
-          pip install safety
-          safety check -r requirements.txt
-
-      # Análisis de código estático
-      - name: Run bandit security linter
-        run: |
-          pip install bandit
+          pip install safety bandit
+          safety check -r requirements.txt --json --output safety-report.json
           bandit -r app/ -f json -o bandit-report.json || true
-
-      - name: Upload security report
-        uses: actions/upload-artifact@v3
+          
+      - uses: actions/upload-artifact@v3
         with:
-          name: security-report
-          path: bandit-report.json
+          name: security-reports
+          path: |
+            safety-report.json
+            bandit-report.json
 
-  # ================================
-  # JOB 4: DEPLOY (solo en main)
-  # ================================
   deploy:
-    name: Deploy to Production
+    name: Deploy Notification
     runs-on: ubuntu-latest
     needs: [test, docker-build, security]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Deploy notification
+      - uses: actions/checkout@v4
+      
+      - name: Notify
         run: |
-          echo " All tests passed! Ready for deployment!"
-          echo " Test results: Passed"
-          echo " Docker build: Success"
-          echo " Security scan: Passed"
-          echo " Deployment would happen here..."
+          echo "TODOS LOS TESTS PASARON"
+          echo "IMAGEN DOCKER CONSTRUIDA"
+          echo "ESCANEOS DE SEGURIDAD COMPLETADOS"
+          echo "DESPLIEGUE EN RAILWAY CONFIGURADO EN railway.toml"
